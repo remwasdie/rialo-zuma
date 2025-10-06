@@ -1,0 +1,272 @@
+/* Zuma-like realistic version with shooter animation */
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('score');
+const restartBtn = document.getElementById('restart');
+
+const W = canvas.width;
+const H = canvas.height;
+const CENTER = { x: W / 2, y: H / 2 };
+const PATH_RADIUS = Math.min(W, H) * 0.35;
+const BALL_RADIUS = 12;
+const COLORS = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#a855f7'];
+
+let mouse = { x: CENTER.x, y: CENTER.y };
+let score = 0;
+
+// === SHOOTER STATE ===
+let shootAnim = 0; // 0 = idle, 1 = recoil (mundur)
+let recoilTime = 0;
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  mouse.x = (e.clientX - rect.left) * (canvas.width / rect.width);
+  mouse.y = (e.clientY - rect.top) * (canvas.height / rect.height);
+});
+canvas.addEventListener('click', shootBall);
+canvas.addEventListener('touchstart', e => {
+  const t = e.touches[0];
+  const rect = canvas.getBoundingClientRect();
+  mouse.x = (t.clientX - rect.left) * (canvas.width / rect.width);
+  mouse.y = (t.clientY - rect.top) * (canvas.height / rect.height);
+  shootBall();
+});
+restartBtn.addEventListener('click', init);
+
+// === PATH (lingkaran) ===
+const PATH_POINTS = 360;
+const path = [];
+for (let i = 0; i < PATH_POINTS; i++) {
+  const a = (i / PATH_POINTS) * Math.PI * 2;
+  const x = CENTER.x + Math.cos(a) * PATH_RADIUS;
+  const y = CENTER.y + Math.sin(a) * PATH_RADIUS;
+  path.push({ x, y });
+}
+function samplePath(t) {
+  let i = t * PATH_POINTS;
+  let i0 = Math.floor(i) % PATH_POINTS;
+  let i1 = (i0 + 1) % PATH_POINTS;
+  let f = i - Math.floor(i);
+  const x = path[i0].x * (1 - f) + path[i1].x * f;
+  const y = path[i0].y * (1 - f) + path[i1].y * f;
+  return { x, y };
+}
+
+let chain = [];
+let speed = 0.00018;
+let lastTime = performance.now();
+
+let nextColor = randColor();
+let activeBall = null;
+
+function randColor() {
+  return COLORS[Math.floor(Math.random() * COLORS.length)];
+}
+
+function init() {
+  chain = [];
+  score = 0;
+  scoreEl.textContent = 'Score: 0';
+  let start = 0.0;
+  let spacing = 0.028;
+  for (let i = 0; i < 15; i++) {
+    chain.push({ pos: (start - i * spacing + 1) % 1, color: randColor() });
+  }
+  nextColor = randColor();
+  activeBall = null;
+  shootAnim = 0;
+  lastTime = performance.now();
+}
+init();
+
+function shootBall() {
+  if (activeBall) return;
+
+  // posisi ujung meriam (bukan tengah)
+  const dx = mouse.x - CENTER.x;
+  const dy = mouse.y - CENTER.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const muzzleX = CENTER.x + (dx / len) * 30; // offset dari pusat
+  const muzzleY = CENTER.y + (dy / len) * 30;
+
+  const speedBullet = 4.5;
+  activeBall = {
+    x: muzzleX,
+    y: muzzleY,
+    vx: (dx / len) * speedBullet,
+    vy: (dy / len) * speedBullet,
+    color: nextColor,
+  };
+  nextColor = randColor();
+
+  // aktifkan recoil anim
+  shootAnim = 1;
+  recoilTime = performance.now();
+}
+
+function attachBallToChain(bx, by, color) {
+  let bestIndex = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < chain.length; i++) {
+    const p = samplePath(chain[i].pos);
+    const d = Math.hypot(p.x - bx, p.y - by);
+    if (d < bestDist) {
+      bestDist = d;
+      bestIndex = i;
+    }
+  }
+  const insertPos = (chain[bestIndex].pos + 0.015) % 1;
+  chain.splice(bestIndex + 1, 0, { pos: insertPos, color });
+  normalizeChain();
+  checkCombosAtIndex(bestIndex + 1);
+}
+
+function normalizeChain() {
+  const minSpacing = 0.016;
+  chain.sort((a, b) => a.pos - b.pos);
+  for (let i = 1; i < chain.length; i++) {
+    if (chain[i].pos - chain[i - 1].pos < minSpacing) {
+      chain[i].pos = chain[i - 1].pos + minSpacing;
+    }
+  }
+  for (let i = 0; i < chain.length; i++) {
+    chain[i].pos = (chain[i].pos + 1) % 1;
+  }
+}
+
+function checkCombosAtIndex(index) {
+  const color = chain[index].color;
+  let left = index;
+  let right = index;
+  while (left - 1 >= 0 && chain[left - 1].color === color) left--;
+  while (right + 1 < chain.length && chain[right + 1].color === color) right++;
+  const count = right - left + 1;
+  if (count >= 3) {
+    chain.splice(left, count);
+    score += count * 10;
+    scoreEl.textContent = `Score: ${score}`;
+  }
+}
+
+function update(now) {
+  const dt = now - lastTime;
+  lastTime = now;
+
+  const smooth = 1 - Math.exp(-dt * 0.005);
+  for (let i = 0; i < chain.length; i++) {
+    chain[i].pos += speed * dt * smooth;
+    if (chain[i].pos >= 1) chain[i].pos -= 1;
+  }
+
+  // recoil meriam
+  if (shootAnim === 1) {
+    const t = now - recoilTime;
+    if (t > 120) shootAnim = 2; // mundur selesai
+  } else if (shootAnim === 2) {
+    const t = now - recoilTime;
+    if (t > 240) shootAnim = 0; // kembali normal
+  }
+
+  // gerak bola
+  if (activeBall) {
+    activeBall.x += activeBall.vx;
+    activeBall.y += activeBall.vy;
+    const dist = Math.hypot(activeBall.x - CENTER.x, activeBall.y - CENTER.y);
+    if (dist > PATH_RADIUS + 60) {
+      attachBallToChain(activeBall.x, activeBall.y, activeBall.color);
+      activeBall = null;
+    } else {
+      let bestD = Infinity;
+      for (let s = 0; s < PATH_POINTS; s += 3) {
+        const t = s / PATH_POINTS;
+        const p = samplePath(t);
+        const d = Math.hypot(p.x - activeBall.x, p.y - activeBall.y);
+        if (d < bestD) bestD = d;
+      }
+      if (bestD < BALL_RADIUS * 1.6) {
+        attachBallToChain(activeBall.x, activeBall.y, activeBall.color);
+        activeBall = null;
+      }
+    }
+  }
+
+  draw();
+  requestAnimationFrame(update);
+}
+requestAnimationFrame(update);
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  ctx.beginPath();
+  ctx.lineWidth = 6;
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+  ctx.arc(CENTER.x, CENTER.y, PATH_RADIUS, 0, Math.PI * 2);
+  ctx.stroke();
+
+  for (let i = 0; i < chain.length; i++) {
+    const p = samplePath(chain[i].pos);
+    drawBall(p.x, p.y, chain[i].color);
+  }
+
+  drawShooter();
+  if (activeBall) drawBall(activeBall.x, activeBall.y, activeBall.color, true);
+  drawNextBallPreview();
+}
+
+function drawBall(x, y, color, glow = false) {
+  ctx.beginPath();
+  ctx.fillStyle = color;
+  ctx.arc(x, y, BALL_RADIUS, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+  ctx.stroke();
+  if (glow) {
+    ctx.beginPath();
+    ctx.arc(x, y, BALL_RADIUS + 6, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.08;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawShooter() {
+  const dx = mouse.x - CENTER.x;
+  const dy = mouse.y - CENTER.y;
+  const ang = Math.atan2(dy, dx);
+
+  // recoil offset
+  let offset = 0;
+  if (shootAnim === 1) offset = -4;
+  else if (shootAnim === 2) offset = -2;
+
+  ctx.save();
+  ctx.translate(CENTER.x, CENTER.y);
+  ctx.rotate(ang);
+
+  // barrel
+  ctx.fillStyle = '#1f2937';
+  ctx.fillRect(18 + offset, -6, 36, 12);
+
+  // base
+  ctx.beginPath();
+  ctx.arc(0, 0, 26, 0, Math.PI * 2);
+  ctx.fillStyle = '#0f172a';
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawNextBallPreview() {
+  const px = CENTER.x - 70;
+  const py = CENTER.y + PATH_RADIUS + 40;
+  ctx.beginPath();
+  ctx.fillStyle = nextColor;
+  ctx.arc(px, py, 14, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.font = '12px Inter, sans-serif';
+  ctx.fillStyle = '#dbeafe';
+  ctx.fillText('Next', px + 22, py + 5);
+}
